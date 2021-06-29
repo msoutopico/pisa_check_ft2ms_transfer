@@ -14,10 +14,15 @@
 #
 #  You should have received a copy of the GNU General Public License
 #  along with cApps.  If not, see <https://www.gnu.org/licenses/>.
-
-# pipenv install --python 3.9.1
-# call it from cron as: every 5 min, pipenv run python3 mk_workflows.py -i /path/to/init/bundle -c /path/to/config/file -m /path/to/mapping/file (memoq_capstan_mapping_20210512.xlsx)
-
+#
+# Python 3.8.5
+# pip 20.0.2
+#
+# Call script as, e.g.:
+# python path/to/code/main.py -l ara-ISR -p path/to/files/ara-ISR
+# where path/to/files/ara-ISR is the path to a folder that contains 
+# the two unpacked projects, on which the script write_project2excel.groovy
+# has been run. 
 
 # ############# AUTHORSHIP INFO ###########################################
 
@@ -28,7 +33,7 @@ __license__ = "GPL"
 __version__ = "0.1.0"
 __maintainer__ = "Manuel Souto Pico"
 __email__ = "manuel.souto@capstan.be"
-__status__ = "Testing / pre-production" # "Production"
+__status__ = "Testing" # "Production"
 
 
 # ############# IMPORTS ###########################################
@@ -39,20 +44,23 @@ from pathlib import Path
 import pandas as pd
 import argparse
 import pprint
+import hashlib
+import requests
+#from langtags_client import get_correspondent_tag
+import xlsxwriter
 
 
 # ############# PROGRAM DESCRIPTION ###########################################
 
-text = "This application automates the creation of workflow folders and creates OmegaT project packages"
+text = "This script compares the translation of all segments in common between FT21 and MS22 packages,\
+    and will produce a report showing whether the transaltion has changed or not, or if the segment was\
+     not found."
 
 # intialize arg parser with a description
 parser = argparse.ArgumentParser(description=text)
-parser.add_argument("-V", "--version", help="show program version", action="store_true")
-parser.add_argument("-l", "--locale", help="version name")
-parser.add_argument("-p", "--path", help="path to version/locale directory")
-#parser.add_argument("-o", "--origin", help="path to the file with the original translation (e.g. FT21)")
-#parser.add_argument("-e", "--edited", help="path to the file with the edited translation (e.g. MS22)")
-# parser.add_argument("-c", "--config", help="specify path to config file")
+parser.add_argument("-V", "--version", help="program version", action="store_true")
+parser.add_argument("-l", "--locale", help="version/locale name, e.g. 'ara-ISR'")
+parser.add_argument("-p", "--path", help="path to version/locale directory, e.g. 'path/to/files/ara-ISR'")
 
 # read arguments from the command line
 args = parser.parse_args()
@@ -62,10 +70,6 @@ if args.version:
     print(f"This is the workflow creation utility, version {__version__}")
     sys.exit()
 
-
-#if args.origin and args.edited:
-#    origin = Path(args.origin.rstrip('/'))
-#    edited = Path(args.edited.rstrip('/'))
 if args.locale and args.path:
     locale = args.locale.strip()
     locale_dir_path = Path(args.path.rstrip('/'))
@@ -74,11 +78,9 @@ else:
     sys.exit()
 
 
-
 # ############# LOGGING ###########################################
 
 ts = time.gmtime()
-# the directory of this script being run (e.g. /path/to/cli_automation/flash_prepp_help)
 parent_dir = Path(__file__).parent.absolute()
 # current working directory (from where the script is called )
 #y = Path().absolute()
@@ -92,8 +94,8 @@ else:
     logging.info("Successfully created the directory %s " % logdir_path)
 formatted_ts = time.strftime("%Y%m%d", ts)
 logfile_path = os.path.join(logdir_path, formatted_ts + '.log')
-#open(log_fname, "a")
-print(f"The log will be written to '{logfile_path}'")
+
+# print(f"The log will be written to '{logfile_path}'")
 
 logging.basicConfig(
     format='[%(asctime)s] %(name)s@%(module)s:%(lineno)d %(levelname)s: %(message)s', 
@@ -102,6 +104,18 @@ logging.basicConfig(
 
 
 # ############# FUNCTIONS ###########################################
+
+# corresponding tag in another convention (taken from langtags_client.py)
+def get_correspondent_tag(data, input_tag, source_convention, target_convention):
+	return next((tag[target_convention] for tag in data if tag[source_convention] == input_tag), None)
+
+
+def get_lang_subtag(locale):
+    url = 'https://capps.capstan.be/langtags_json.php' ##
+    response = requests.get(url)
+    data = response.json()
+    omt_langtag = get_correspondent_tag(data, 'ara-ISR', 'cApStAn', 'OmegaT')
+    return omt_langtag.split('-')[0]
 
 
 def fstr(template):
@@ -115,18 +129,10 @@ def get_xls_export_data(path_to_prj, omt_prj_name):
     path_to_xls_export = f"{path_to_prj}/{omt_prj_name}/script_output/{omt_prj_name}*.xls"
     logging.info(f"path_to_xls_export: {path_to_xls_export}")
     xls_export = next(file for file in glob.glob(path_to_xls_export)) # to resolve the * 
-    print(f'xls_export: {xls_export}')
+    #print(f'xls_export: {xls_export}')
     with open(xls_export, 'r') as f:
         data = pd.read_excel(xls_export, sheet_name=None)
     return data
-
-
-def get_langtag_from_fname(src_file, langtags):
-    if any(tag in src_file for tag in langtags):
-        tags = [tag for tag in langtags if(tag in src_file)]
-        return max(tags, key=len)  # returning the longest code found (dut-NL, not dut)
-    else:
-        return None
 
 
 def get_proj_files_from_xls_export(data):
@@ -138,82 +144,27 @@ def define_constants():
     stages = ['2021FT', '2022MS']
     stages_short = ['FT21', 'MS22']
     omt_prj_name_tmpl ="PISA{stage}_{locale}_OMT_Questionnaires"
-    return [stages, stages_short, omt_prj_name_tmpl]
+    target_subtag = get_lang_subtag(locale)
+    return [stages, stages_short, omt_prj_name_tmpl, target_subtag]
 
 
-def get_data_from_xlf(path_to_dir, omt_prj_name, target_lang):
-
-    list_of_dfs = []
-
-    logging.info(f"Traverse proj_files")
-    for idx, fname in proj_files.items():
-        if target_lang == None:
-            logging.warning(f"Language tag for the text to send to MT not defined")
-            return False # send to translate
-
-        logging.info(f"target_lang: {target_lang}")
-        # data comes from the omt export in excel (passive)
-        df = data[str(idx)]
-        df.columns = df.iloc[0] # 0 is first row in dataframe excluding the header
-        #df.iloc[0, 0] = "Seg #"
-        sub_df = df.iloc[1:, 0:3] # rows, cols // get only seg#, src, tgt
-        try:
-            s = sub_df[target_lang.split('-')[0]] # series
-            logging.info(f"Getting series successful")
-            logging.info(s)
-        except:
-            logging.error(f"Exception while trying to get series for language {target_lang}")
-            return False
-
-        if isinstance(s, pd.DataFrame):
-            # this happens when src and tgt are both 'en', clean_strings expects a series, not a df
-            logging.warning(f"s is a dataframe, likely source and target languages are the same")
-            logging.info(s.iloc[ :, 1])
-            logging.info("Getting only the second series/column in the df")
-            s = s.iloc[ :, 1]
-        elif isinstance(s, pd.Series):
-            logging.info(f"s is already a series, fine") 
+def create_hash(segment):
+    """ Creates hash value of a tuple including segment number and text of the segment. """
+    fingerprint = hashlib.md5()
+    # fingerprint is a md5 HASH object
+    for x in segment:
+        fingerprint.update(str(x).encode())
+    hash_value = fingerprint.hexdigest()
+    #return (hash_value, segment[1])
+    return hash_value
 
 
-        clean_list = clean_strings(s.tolist())
-        #logging.info(f"clean_list: {clean_list}")
-
-        logging.info(f">>> target_lang: {target_lang}")
-        logging.info(f"Sending {target_lang} strings in '{fname}' to {mt_engine}")
-        mt = get_mt_of_list(clean_list, target_lang, "en")
-        #mt = ["The 3 promotional messages shown are to invite you to participate in the conference on Europe's future.", 'Is this purpose clear to you for each of these messages?', '{@}', 'Yes, definitely', 'Yes, to some extent', 'No, not really', 'No not at all', 'Do not know', 'Below we show some promotional messages that can be used to communicate about the conference on the future of Europe.', "The conference on Europe's future is a citizen influence process on Europe's future.", 'The consultations will be done online and offline and bring together citizens, civil society and EU institutions.', 'With this in mind, for each of the following promotional messages, do you agree or not with the claims?', '{@ Q2_loop}', 'The message is clear', '{@ Q2_loop}', 'The message is credible', '{@ Q2_loop}', 'The message stands out in the campaign', '{@ Q2_loop}', 'The message is informative.', '{@ Q2_loop}', 'The message is inspiring.', 'According to your opinion, which of the 3 promotional announcements best conveys that you as a citizen can participate in the conference on the future of Europe?', 'For each of the following promotional notification how likely or incredible is that you would tell friends, family and family or colleagues about the conference on the future of Europe?', '{@}', "For each of the following promotional notification how likely or incredible, it is to search for more information about the conference on Europe's future?", '{@}', "For each of the following promotional notification how likely or incredible, it would be to participate in the conference on Europe's future?", '{@}', 'For each of the following promotional messages, do you agree or not that the message has the right tone to communicate with citizens as yourself?', '{@}', "Below, we show 3 promotional messages with different text that can be used to communicate about the conference on Europe's future.", '{# Q0a} {# q0b}', 'Which of the 3 promotional announcement do you like the most?', 'Which of the 3 promotional messages contributes most to an innovative picture of the European Union, in your opinion?', 'And which of the 3 promotional messages best shows that the European Union listens to its citizens?', 'Below we show 3 hash tags that may be used to advertise the conference on the future of Europe.', 'How much do you like these hash tags?', 'Hashtaggar or tags that start with the square symbol (#) are used on social media that twitter as a form of tagging that makes it possible to easily find or share content about a substance.', 'Very much', 'Quite', 'Not especially', "Doesn't like it at all", 'If you look at the 3 hashtaggar below which do you think is most effective?', 'None of the above', 'Do not know', 'Would you use any of the said hashtags on social media?', 'Yes, to read content about the conference on the future of Europe', 'Yes, to share or publish content about the conference on the future of Europe', 'No, I would not engage in this subject on social media', "No I don't use social media", 'Do not know', 'Device used to carry out the survey', 'Desktop computer, laptop', 'Smartphone.', 'Thank you for attending this survey.', 'During the next week, Ipsos plans to contact people who participated in more detail some key issues arising from this research using small group discussions online.', 'You will get a small compensation.', 'Would you like to be contacted again by Ipsos for this follow-up research?', 'Yes I want to be contacted to participate in smaller group discussions online', "No I don't want to be contacted to participate in smaller group discussions online", 'Thank you very much for your interest in participating in follow-up discussions in smaller groups online.', 'Are you available on any of the following dates and times?', 'You will obviously be able to thank you when we send the invitation.', '24.', 'March 2021, 17.00-18.00', '25.', 'March 2021, 17.00-18.00', "No I'm not available the dates", 'Thank you so much for attending the survey.', 'We appreciate you to take the time.', 'Agrees entirely', 'Tend to agree with', 'Tend to take distance', 'Takes completely distance', 'Do not know', 'The future is not written yet', "Create Europe's future", 'The future rests in your hands', 'Very likely', 'Likely', 'Unbelievable', 'Very incredible', 'Do not know', '#DriptDinframe.', '#Europa future.', '# Detached']
-
-        if mt == None:
-            logging.error("Something went wrong with the MT engine")
-            logging.warning("Create list of empty transations")
-            mt = [None] * len(clean_list)
-
-        #mt.insert(0, 'MT') # adds label as first row
-        mt.insert(0, mt_col_name) # adds label as first row
-        sub_df.insert(3, mt_col_name, pd.Series(mt), allow_duplicates=True) # arg 1 is after which column it is inserted
-        #print(sub_df.columns)
-        sub_df.columns = ['Seg #', src_col_name, tr_col_name, mt_col_name]
-        #print(sub_df) # now has one more column
-        list_of_dfs.append(sub_df)
-
-    # merge all dataframes for all files in the project
-    proj_df = pd.concat(list_of_dfs)
-    # Segment numbers have been extracted as floats, turn them to int
-    proj_df = proj_df.astype({'Seg #': int})
-    # Use the column of segment numbers as the new index
-    proj_df = proj_df.set_index('Seg #')[0:]
-
-    logging.info("---- This is the new proj_df:")
-    logging.info(proj_df)
-
-    logging.info("---- Returning from function: add_backxlats_to_proj_df()")
-    return proj_df
-
+# ############# LOGIC ###########################################
 
 if __name__ == '__main__':
 
     # get constants
-    stages, stages_short, omt_prj_name_tmpl = define_constants()
+    stages, stages_short, omt_prj_name_tmpl, target_subtag = define_constants()
 
     # build questionnaire dict
     sorted_data = {}
@@ -230,26 +181,58 @@ if __name__ == '__main__':
 
             df = proj_data[str(idx)]
             df.columns = df.iloc[0] # 0 is first row in dataframe excluding the header
-            #df.iloc[0, 4] = "segid"
-            sub_df = df.iloc[1:, 1:4] # rows, cols // get only seg#, src, tgt
-            xlf_dict = list(sub_df.to_dict(orient='index').values()) # remove values to keep segment numbers
-            file_data = {stage: xlf_dict}
+            sub_df = df.iloc[1:, 1:4] # rows, cols // get only src, tgt, seg#
+            # remove list() and values() below to keep segment numbers (dictionary)
+            #xlf_list = list(sub_df.to_dict(orient='index').values())
+            xlf_dict = sub_df.to_dict(orient='index')
+            
+            # create new dict replacing segment numbers with hash values
+            hash_dict = {
+                create_hash([tu['en'], basename, tu['Segment ID']]): 
+                {target_subtag: tu[target_subtag], 'en': tu['en'], 'basename': basename, 'segid': tu['Segment ID']}
+                for tu in xlf_dict.values()
+                }
+
+            file_data = {stage: hash_dict}
             sorted_data[basename].update(file_data)
             #pprint.pprint(file_data)
-            print("-------------------------------------------")
     
-    pprint.pprint(sorted_data)
+    #pprint.pprint(sorted_data)
 
+    report = []
+    report.append(['file', 'hash', 'segid', 'source', 'target', 'FT version', 'comparison'])
+    for filename, questionnaire in sorted_data.items():
+        if len(questionnaire) == 2:
+            field_trial = questionnaire[stages[0]]
+            main_study  = questionnaire[stages[1]]
+            for hash_key, segment in main_study.items():
+                rpt_row = [filename, hash_key, segment['segid'], segment['en'], segment[target_subtag]]
+                if hash_key in field_trial.keys():
+                    if segment[target_subtag] == field_trial[hash_key][target_subtag]:
+                        rpt_row.append('')
+                        rpt_row.append('unaltered')
+                    else:
+                        rpt_row.append(field_trial[hash_key][target_subtag]) # new translation
+                        rpt_row.append('different')
+                else:
+                    rpt_row.append('')
+                    rpt_row.append('not found')
+                
+                #print(rpt_row)
+                report.append(rpt_row)
     
 
-    
+    workbook = xlsxwriter.Workbook(f'pisa_ft2ms_{locale}_transfer_report.xlsx')
+    worksheet = workbook.add_worksheet()
 
+    cell_format = workbook.add_format()
+    cell_format.set_bold(True)
+    #worksheet.set_default_row(20)
+    worksheet.set_row(0, 20, cell_format) # row, row height, formatting
 
+    for row_num, row_data in enumerate(report):
+        for col_num, col_data in enumerate(row_data):
+            worksheet.write(row_num, col_num, col_data)
 
-
-    # dictionary with orig 
-    # add edit to orig dict
-    
-    #print(f'origin is {origin}')
-    #data = pd.read_excel(origin)
-    #print(data)
+    workbook.close()
+    print(f"Report created successfully for version {locale}")
