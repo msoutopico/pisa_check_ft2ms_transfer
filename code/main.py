@@ -81,7 +81,7 @@ else:
 # ############# LOGGING ###########################################
 
 ts = time.gmtime()
-parent_dir = Path(__file__).parent.absolute()
+parent_dir = Path(__file__).parent.resolve() # use resolve(), not absolute() to avoid .. in the path
 # current working directory (from where the script is called )
 #y = Path().absolute()
 
@@ -111,10 +111,12 @@ def get_correspondent_tag(data, input_tag, source_convention, target_convention)
 
 
 def get_lang_subtag(locale):
+    print(f'locale: {locale}')
     url = 'https://capps.capstan.be/langtags_json.php' ##
     response = requests.get(url)
     data = response.json()
-    omt_langtag = get_correspondent_tag(data, 'ara-ISR', 'cApStAn', 'OmegaT')
+    omt_langtag = get_correspondent_tag(data, locale, 'cApStAn', 'OmegaT')
+    print(f'omt_langtag: {omt_langtag}')
     return omt_langtag.split('-')[0]
 
 
@@ -145,6 +147,7 @@ def define_constants():
     stages_short = ['FT21', 'MS22']
     omt_prj_name_tmpl ="PISA{stage}_{locale}_OMT_Questionnaires"
     target_subtag = get_lang_subtag(locale)
+    print(f'target_subtag: {target_subtag}')
     return [stages, stages_short, omt_prj_name_tmpl, target_subtag]
 
 
@@ -184,6 +187,7 @@ if __name__ == '__main__':
             sub_df = df.iloc[1:, 1:4] # rows, cols // get only src, tgt, seg#
             # remove list() and values() below to keep segment numbers (dictionary)
             #xlf_list = list(sub_df.to_dict(orient='index').values())
+            sub_df.fillna(0)
             xlf_dict = sub_df.to_dict(orient='index')
             
             # create new dict replacing segment numbers with hash values
@@ -221,8 +225,12 @@ if __name__ == '__main__':
                 #print(rpt_row)
                 report.append(rpt_row)
     
-
-    workbook = xlsxwriter.Workbook(f'pisa_ft2ms_{locale}_transfer_report.xlsx')
+    report_fname = f'pisa_ft2ms_{locale}_transfer_report.xlsx'
+    grandparent_dir = Path(parent_dir).parent.resolve()
+    if not os.path.exists(os.path.join(grandparent_dir, 'reports')):
+        os.makedirs(os.path.join(grandparent_dir, 'reports'))
+    report_path = os.path.join(grandparent_dir, 'reports', report_fname)
+    workbook = xlsxwriter.Workbook(report_path, {'nan_inf_to_errors': True})
     worksheet = workbook.add_worksheet()
 
     cell_format = workbook.add_format()
